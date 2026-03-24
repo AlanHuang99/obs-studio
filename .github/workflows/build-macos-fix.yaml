@@ -1,0 +1,151 @@
+name: Build Patched OBS
+on:
+  schedule:
+    # Check weekly on Mondays at 9am UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+jobs:
+  build-patched-obs:
+    name: Sync, Patch & Build
+    runs-on: macos-15
+    defaults:
+      run:
+        shell: zsh --no-rcs --errexit --pipefail {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: obsproject/obs-studio
+          submodules: recursive
+          fetch-depth: 0
+          ref: master
+
+      - name: Check for New Release
+        id: check
+        run: |
+          : Check for New Release
+          local latest_tag="$(git describe --tags --abbrev=0 2>/dev/null || print 'none')"
+          print "latest_tag=${latest_tag}" >> $GITHUB_OUTPUT
+          print "Latest upstream tag: ${latest_tag}"
+
+      - name: Apply Sleep/Wake Fix
+        run: |
+          : Apply Sleep/Wake Fix
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Fetch the fix branch from the fork
+          git remote add fork https://github.com/AlanHuang99/obs-studio.git
+          git fetch fork fix/macos-screencapture-sleep-wake
+
+          # Cherry-pick the two fix commits
+          git cherry-pick c4b53a9 c46804d
+
+          # Verify the patched files
+          print "Patched files:"
+          git diff HEAD~2 --stat
+
+      - name: Set Up Environment
+        run: |
+          : Set Up Environment
+          print "::group::Select Xcode"
+          local xcode_path="$(find /Applications -maxdepth 1 -name 'Xcode*.app' | sort -V | tail -1)"
+          sudo xcode-select --switch "${xcode_path}/Contents/Developer"
+          xcodebuild -version
+          print "::endgroup::"
+
+          print "::group::Install Dependencies"
+          brew install --quiet cmake xcbeautify
+          print "::endgroup::"
+
+      - name: Configure OBS Studio
+        env:
+          CODESIGN_IDENT: "-"
+        run: |
+          : Configure OBS Studio
+          typeset -gx NSUnbufferedIO=YES
+          cmake --preset macos \
+            -DCMAKE_OSX_ARCHITECTURES:STRING=arm64 \
+            -DENABLE_BROWSER:BOOL=OFF \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR:BOOL=OFF
+
+      - name: Build Full OBS Studio
+        run: |
+          : Build Full OBS Studio
+          cd build_macos
+          xcodebuild \
+            ONLY_ACTIVE_ARCH=NO \
+            -project obs-studio.xcodeproj \
+            -target obs-studio \
+            -destination "generic/platform=macOS,name=Any Mac" \
+            -configuration RelWithDebInfo \
+            -parallelizeTargets \
+            -hideShellScriptEnvironment \
+            build 2>&1 | xcbeautify --renderer github-actions
+
+      - name: Package OBS.app
+        id: package
+        run: |
+          : Package OBS.app
+          cd build_macos
+          rm -rf OBS.app
+          mkdir OBS.app
+          ditto frontend/RelWithDebInfo/OBS.app OBS.app
+
+          # Get version info
+          local obs_version="$(defaults read $(pwd)/OBS.app/Contents/Info.plist CFBundleShortVersionString 2>/dev/null || print 'unknown')"
+          local build_date="$(date +%Y%m%d)"
+          print "obs_version=${obs_version}" >> $GITHUB_OUTPUT
+          print "build_date=${build_date}" >> $GITHUB_OUTPUT
+          print "Built OBS ${obs_version} on ${build_date}"
+
+          # Create zip for release
+          ditto -c -k --keepParent OBS.app "OBS-${obs_version}-macOS-arm64-sleep-wake-fix.zip"
+
+      - name: Create or Update Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          : Create or Update Release
+          local obs_version="${{ steps.package.outputs.obs_version }}"
+          local build_date="${{ steps.package.outputs.build_date }}"
+          local tag_name="patched-${obs_version}-${build_date}"
+          local zip_file="build_macos/OBS-${obs_version}-macOS-arm64-sleep-wake-fix.zip"
+
+          # Delete old release with same OBS version if exists
+          gh release list --repo ${{ github.repository }} --limit 10 2>/dev/null | \
+            grep "patched-${obs_version}" | awk '{print $1}' | \
+            while read old_tag; do
+              gh release delete "${old_tag}" --repo ${{ github.repository }} --yes 2>/dev/null || true
+              git push --delete origin "${old_tag}" 2>/dev/null || true
+            done
+
+          # Create new release
+          gh release create "${tag_name}" \
+            --repo ${{ github.repository }} \
+            --title "OBS ${obs_version} with Sleep/Wake Fix (${build_date})" \
+            --notes "$(cat <<NOTES
+          ## OBS ${obs_version} — macOS arm64 with Sleep/Wake Screen Capture Fix
+
+          **Built from:** upstream OBS \`${obs_version}\` + sleep/wake auto-restart patch
+          **Date:** ${build_date}
+          **Architecture:** Apple Silicon (arm64)
+
+          ### What's patched
+          Screen capture (ScreenCaptureKit) automatically restarts after macOS sleep/wake
+          instead of freezing. No more manual "Restart Capture" button clicks.
+
+          ### Install
+          1. Download the zip below
+          2. Extract \`OBS.app\`
+          3. Move to \`/Applications/\` (replacing existing OBS)
+          4. Right-click → Open on first launch
+
+          ### Note
+          This is ad-hoc signed (not notarized). macOS may require you to grant
+          screen capture permissions again on first launch.
+          NOTES
+          )" \
+            "${zip_file}"
+
+          print "Release created: ${tag_name}"
