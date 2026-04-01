@@ -1,0 +1,50 @@
+name: macOS CI
+run-name: macOS compilation test 🍏
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.head_ref || github.ref }}'
+  cancel-in-progress: true
+jobs:
+  macos-build:
+    name: macOS 🍏
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [arm64, x86_64]
+    defaults:
+      run:
+        shell: zsh --no-rcs --errexit --pipefail {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set Up Environment 🔧
+        id: setup
+        run: |
+          : Set Up Environment 🔧
+          if (( ${+RUNNER_DEBUG} )) setopt XTRACE
+
+          print '::group::Select Xcode'
+          local xcode_path="$(find /Applications -maxdepth 1 -name 'Xcode*.app' | sort -V | tail -1)"
+          sudo xcode-select --switch "${xcode_path}/Contents/Developer"
+          xcodebuild -version
+          print '::endgroup::'
+
+          local -A arch_names=(x86_64 intel arm64 apple)
+          print "cpuName=${arch_names[${{ matrix.target }}]}" >> $GITHUB_OUTPUT
+
+      - name: Build OBS Studio 🧱
+        uses: ./.github/actions/build-obs
+        with:
+          target: ${{ matrix.target }}
+          config: RelWithDebInfo
+          codesign: 'false'
