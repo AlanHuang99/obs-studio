@@ -120,6 +120,7 @@ build() {
       cmake_args+=(
         --preset 'macos-ci'
         -DCMAKE_OSX_ARCHITECTURES:STRING=${target##*-}
+        -DCMAKE_XCODE_ATTRIBUTE_COMPILATION_CACHE_ENABLE_CACHING:STRING=NO
       )
 
       if (( debug )) {
@@ -151,7 +152,7 @@ build() {
 
       local -a build_args=(
         ONLY_ACTIVE_ARCH=NO
-        COMPILATION_CACHE_ENABLE=NO
+        COMPILATION_CACHE_ENABLE_CACHING=NO
         CLANG_ENABLE_COMPILATION_CACHE=NO
         -project obs-studio.xcodeproj
         -target obs-studio
@@ -164,7 +165,7 @@ build() {
 
       local -a archive_args=(
         ONLY_ACTIVE_ARCH=NO
-        COMPILATION_CACHE_ENABLE=NO
+        COMPILATION_CACHE_ENABLE_CACHING=NO
         CLANG_ENABLE_COMPILATION_CACHE=NO
         -project obs-studio.xcodeproj
         -scheme obs-studio
@@ -185,7 +186,7 @@ build() {
       local -a analyze_args=(
         CLANG_ANALYZER_OUTPUT=sarif
         CLANG_ANALYZER_OUTPUT_DIR=${project_root}/analytics
-        COMPILATION_CACHE_ENABLE=NO
+        COMPILATION_CACHE_ENABLE_CACHING=NO
         CLANG_ENABLE_COMPILATION_CACHE=NO
         -project obs-studio.xcodeproj
         -target obs-studio
